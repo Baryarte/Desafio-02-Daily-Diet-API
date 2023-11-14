@@ -1,5 +1,4 @@
 ﻿import { z } from 'zod'
-import { app } from '../app'
 import { knex } from '../database'
 import { randomUUID } from 'crypto'
 import { FastifyInstance } from 'fastify'
@@ -11,7 +10,6 @@ export async function mealsRoutes(app: FastifyInstance) {
       description: z.string(),
       datetime: z.string().datetime(),
       on_diet: z.boolean(),
-      user_id: z.string().nullish(),
     })
 
     const {
@@ -19,18 +17,68 @@ export async function mealsRoutes(app: FastifyInstance) {
       description,
       datetime,
       on_diet: onDiet,
-      user_id: userId,
     } = createMealBodySchema.parse(request.body)
 
-    let sessionId = request.cookies.sessionId
+    const sessionId = request.cookies.sessionId
+    const userId = request.cookies.userId
 
-    if (!sessionId) {
-      sessionId = randomUUID()
+    // definir valores de sequencia
+    let currentSequence: number
+    let bestSequence: number
 
-      reply.cookie('sessionId', sessionId, {
+    // se for um usuario logado, pegar valores de sequencia do banco
+    if (userId) {
+      const user = await knex('users').where({ id: userId }).first()
+      if (!user) {
+        return reply.status(404).send({ error: 'User not found' })
+      }
+      currentSequence = user.current_sequence
+      bestSequence = user.best_sequence
+
+      if (onDiet) {
+        currentSequence++
+        if (currentSequence > bestSequence) {
+          bestSequence = currentSequence
+        }
+      } else {
+        currentSequence = 0
+      }
+      await knex('users')
+        .update({
+          current_sequence: currentSequence,
+          best_sequence: bestSequence,
+        })
+        .where({ id: userId })
+      // se for um usuario anonimo, pegar valores de sequencia do cookie
+    } else {
+      currentSequence = Number(request.cookies.currentSequence)
+      bestSequence = Number(request.cookies.bestSequence)
+
+      // se nao existir cookie, criar um novo
+      if (isNaN(currentSequence) || isNaN(bestSequence)) {
+        currentSequence = 0
+        bestSequence = currentSequence
+      }
+
+      // se for uma refeicao na dieta, incrementar sequencia
+      if (onDiet) {
+        currentSequence++
+        if (currentSequence > bestSequence) {
+          bestSequence = currentSequence
+        }
+      } else {
+        currentSequence = 0
+      }
+
+      const cookieConfig = {
         path: '/',
-        maxAge: 1000 * 60 * 60 * 24 * 7,
-      })
+        maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+      }
+
+      // atualizar cookie
+      reply
+        .cookie('currentSequence', String(currentSequence), cookieConfig)
+        .cookie('bestSequence', String(bestSequence), cookieConfig)
     }
 
     await knex('meals').insert({
@@ -51,7 +99,7 @@ export async function mealsRoutes(app: FastifyInstance) {
       .select('*')
       .where({ session_id: request.cookies.sessionId })
 
-    return { meals }
+    return { meals, count: meals.length }
   })
 
   app.get('/:id', async (request, reply) => {

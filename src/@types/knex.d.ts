@@ -16,6 +16,8 @@ declare module 'knex/types/tables' {
       id: string
       name: string
       email: string
+      best_sequence: number
+      current_sequence: number
       created_at: Date
     }
   }
